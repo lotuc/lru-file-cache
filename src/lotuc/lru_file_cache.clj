@@ -6,14 +6,14 @@
   ([cache-dir
     {:keys [max-size scan-lock watch-opts scan-opts cleanup-opts]
      :as opts}]
-   (lru/build-lru-cache (assoc opts :cache-dir cache-dir)))
+   (lru/create-lru-cache (assoc opts :cache-dir cache-dir)))
   ([cache-dir]
    (create-lru-file-cache cache-dir nil)))
 
 (defn close-lru-file-cache!
   "Stop associated backgroud tasks."
   [cache]
-  (lru/close-lru-cache cache))
+  (lru/close-lru-cache! cache))
 
 (defn cache-file-by-md5
   "Cache a file using its MD5 hash as the key."

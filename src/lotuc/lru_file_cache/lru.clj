@@ -11,19 +11,20 @@
 (defn -record [{:keys [!lru]} md5 mtime size]
   (->> (fn [m]
          (let [tracked? (get-in m [:lru-map md5])]
-           (cond-> (assoc-in m [:lru-map md5] mtime)
+           (cond-> (-> m
+                       (assoc-in [:lru-map md5] mtime)
+                       (assoc-in [:size-map md5] (or size 0)))
              (not tracked?)
              (update :size #(+ (or % 0) (or size 0))))))
        (swap! !lru)))
 
-(defn -record-removal [{:keys [!lru]} md5 size]
+(defn -record-removal [{:keys [!lru]} md5]
   (->> (fn [m]
-         (let [tracked? (get-in m [:lru-map md5])]
-           (if tracked?
-             (-> m
-                 (update :lru-map dissoc md5)
-                 (update :size #(- (or % 0) size)))
-             m)))
+         (let [size (or (get-in m [:size-map md5]) 0)]
+           (-> m
+               (update :lru-map dissoc md5)
+               (update :size-map dissoc md5)
+               (update :size #(- (or % 0) size)))))
        (swap! !lru)))
 
 (defn -schedule-run
@@ -67,7 +68,8 @@
        (when-some [{:keys [stop-loop-run!]} @!state]
          (when stop-loop-run! (stop-loop-run!)))
        (let [ch (async/chan)]
-         (reset! !state {:stop-loop-run (fn* ^:once stop-loop-run [] (async/close! ch))})
+         (reset! !state {:stop-loop-run
+                         (fn* ^:once stop-loop-run [] (async/close! ch))})
          (loop-run! ch))))))
 
 (defn -scan-files-dir
@@ -135,32 +137,41 @@
          {:keys [lock-file watch-opts]} scan-lock
          {:keys [ctrl data]} (file-lock/watch-lock-file lock-file watch-opts)
          checked? (promise)]
-
      (when-not (:watching? @!lock-state)
        (swap! !lock-state assoc :hold? nil :watching? true)
        (async/go-loop [i 0]
          (when (= i 1) (deliver checked? true))
-         (if-some [v (async/<! data)]
-           (let [hold? (= v :taken)]
+         (if-some [{:keys [hold?]} (async/<! data)]
+           (do
              (async/<! (async/thread (if hold? (on-hold?) (on-lost?))))
              (swap! !lock-state assoc
                     :hold? hold? :switch-time (u/date-now))
              (recur (inc i)))
            (do (async/<! (async/thread (on-lost?)))
                (swap! !lock-state assoc
-                      :hold? false :watching? false
-                      :switch-time (u/date-now)))))
+                      :hold? false :watching? false :switch-time (u/date-now)))))
        (async/go (async/<! (async/thread @close (async/close! ctrl))))
        checked?))))
 
 (defn lru-evict
   ([{:keys [!lru] :as cache}]
-   (when-some [[md5] (first (:lru-map @!lru))]
-     (lru-evict cache md5)))
+   (when-some [[md5 mtime] (first (:lru-map @!lru))]
+     (if-some [f (cache-dir/-cache-file cache md5 true)]
+       (let [mtime' (u/get-file-mtime f)
+             size   (u/get-file-size f)]
+         (if (or (= mtime mtime') (not size))
+           ;; mtime not changed, but cannot get size for some reason, evict
+           ;; first for later rescan
+           (lru-evict cache md5)
+           ;; mtime changed, re-record it & retry eviction
+           (do (-record cache md5 mtime' size)
+               (recur cache))))
+       ;; file not found, cleanup it
+       (lru-evict cache md5))))
   ([{:keys [!lru] :as cache} md5]
-   (when-some [size (:size (cache-dir/remove-file-by-md5 cache md5))]
-     (-record-removal cache md5 size)
-     md5)))
+   (-record-removal cache md5)
+   (cache-dir/remove-file-by-md5 cache md5)
+   md5))
 
 (defn -lru-put [{:keys [!lru] :as cache} put-fn]
   (when-some [{:keys [md5 new? mtime size]} (put-fn cache)]
@@ -173,12 +184,6 @@
 (defn lru-put-content [{:keys [!lru] :as cache} content]
   (-lru-put cache #(cache-dir/cache-content-by-md5 % content)))
 
-(defn lru-put [{:keys [!lru] :as cache} file]
-  (when-some [{:keys [md5 new? mtime size]}
-              (cache-dir/cache-file-by-md5 cache file)]
-    (-record cache md5 mtime size)
-    md5))
-
 (defn lru-get [{:keys [!lru] :as cache} md5]
   (let [md5 (string/lower-case md5)
         {:keys [mtime f]} (cache-dir/get-file-by-md5 cache md5)]
@@ -186,7 +191,7 @@
       (swap! !lru assoc-in [:lru-map md5] mtime))
     f))
 
-(defn build-lru-cache
+(defn create-lru-cache
   [{:keys [cache-dir scan-lock] :as cache}]
   {:pre [(some? cache-dir)]}
   (let [scan-lock
@@ -207,30 +212,6 @@
         :on-lost? #(do (-lru-scan cache true)
                        (-lru-cleanup cache true))}))))
 
-(defn close-lru-cache
+(defn close-lru-cache!
   [{:keys [close]}]
   (some-> close (deliver true)))
-
-(comment
-  (def c (build-lru-cache
-          {:cache-dir "/tmp/lru-cache"
-           :scan-lock {:lock-file "/tmp/lru-cache/lock"
-                       :watch-opts {:me-id "test"}}
-           :max-size 169
-           :scan-opts {:interval-ms 10000}
-           :cleanup-opts {:interval-ms 1000}}))
-  (close-lru-cache c)
-
-  (def md5s (into [] (for [i (range 200)]
-                       (do (Thread/sleep 10)
-                           (lru-put-content c (str "hello " i))))))
-
-  @(:current-run @(:!cleanup-state c))
-
-  (def c' (build-lru-cache
-           {:cache-dir "/tmp/lru-cache"
-            :scan-lock {:lock-file "/tmp/lru-cache/lock"
-                        :watch-opts {:me-id "test1"}}}))
-  (close-lru-cache c')
-
-  #_())

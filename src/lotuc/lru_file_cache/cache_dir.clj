@@ -16,9 +16,13 @@
   {:pre [(or (string? cache-dir) (instance? java.io.File cache-dir))]}
   (io/file cache-dir "cache"))
 
-(defn -cache-file [cache md5]
-  {:pre [(string? md5) (= 32 (count md5))]}
-  (io/file (-md5-cache-dir cache) (subs md5 0 2) md5))
+(defn -cache-file
+  ([cache md5]
+   (-cache-file cache md5 false))
+  ([cache md5 check-exist?]
+   {:pre [(string? md5) (= 32 (count md5))]}
+   (let [f (io/file (-md5-cache-dir cache) (subs md5 0 2) md5)]
+     (when (or (not check-exist?) (.exists f)) f))))
 
 (defn cache-by-md5
   "(write-to-file ^java.io.File file)"
@@ -36,12 +40,14 @@
              :md5 md5
              :size (u/get-file-size f)}
             (do (u/ensure-parents f)
-                (let [moved-by-me (u/atomic-move-file t f)]
-                  (if (.exists f)
-                    {:mtime (u/get-file-mtime f)
+                (let [moved-by-me (u/atomic-move-file t f)
+                      mtime (u/get-file-mtime f)
+                      size (u/get-file-size f)]
+                  (when (.exists f)
+                    {:mtime mtime
                      :new? moved-by-me
                      :md5 md5
-                     :size (u/get-file-size f)}))))
+                     :size size}))))
           (finally
             (u/delete-file-if-exists t))))))
 
@@ -68,7 +74,6 @@
   {:pre [(or (string? cache-dir) (instance? java.io.File cache-dir))]}
   (u/catch-all
    (let [f (-cache-file cache md5)
-         size (u/get-file-size f)
          b (u/delete-file-if-exists f)]
      (u/delete-file-if-exists (.getParentFile f))
-     (when b {:size size}))))
+     b)))

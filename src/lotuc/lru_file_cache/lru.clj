@@ -184,6 +184,9 @@
 (defn lru-put-content [{:keys [!lru] :as cache} content]
   (-lru-put cache #(cache-dir/cache-content-by-md5 % content)))
 
+(defn lru-put-writer-fn [cache write-fn]
+  (-lru-put cache #(cache-dir/cache-by-md5 % write-fn)))
+
 (defn lru-get [{:keys [!lru] :as cache} md5]
   (let [md5 (string/lower-case md5)
         {:keys [mtime f]} (cache-dir/get-file-by-md5 cache md5)]

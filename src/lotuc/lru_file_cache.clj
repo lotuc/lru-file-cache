@@ -22,8 +22,10 @@
 
 (defn cache-content-by-md5
   "Cache spitable content."
-  [cache content]
-  (lru/lru-put-content cache content))
+  [cache content-or-write-fn]
+  (if (fn? content-or-write-fn)
+    (lru/lru-put-writer-fn cache content-or-write-fn)
+    (lru/lru-put-content cache content-or-write-fn)))
 
 (defn get-file-by-md5
   "Get a file from the cache by its MD5 hash."

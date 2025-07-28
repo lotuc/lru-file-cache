@@ -58,7 +58,7 @@
 (defn cache-file-by-md5
   [{:keys [cache-dir] :as cache} file]
   {:pre [(or (string? cache-dir) (instance? java.io.File cache-dir))]}
-  (cache-by-md5 #(u/copy-file-overwrite file %)))
+  (cache-by-md5 cache #(u/copy-file-overwrite file %)))
 
 (defn get-file-by-md5
   [{:keys [cache-dir] :as cache} md5]
